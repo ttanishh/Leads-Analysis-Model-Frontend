@@ -1,128 +1,134 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
 import plotly.express as px
-import io
-import requests
+import requests, io
 
-# Page config
-st.set_page_config(page_title="Lead Scoring Dashboard", layout="wide")
+# ───────────────────────────────────────────────────────────
+API_URL = "https://leads-analysis-model-2-production.up.railway.app/predict"
+# ───────────────────────────────────────────────────────────
 
-st.title("📊 Lead Scoring Dashboard")
-st.markdown("Upload your Excel file, explore it, and score leads using your ML model via API.")
+st.set_page_config(page_title="Lead Scoring Dashboard", page_icon="🎯", layout="wide")
 
-# Upload Excel
-uploaded_file = st.file_uploader("📂 Upload Excel File", type=["xlsx"])
+st.title("🎯 Lead Scoring Dashboard")
+st.caption("Upload an Excel file • Explore the data • Score leads with the ML API")
 
+uploaded_file = st.file_uploader("📂  Upload Excel (.xlsx)", type=["xlsx"])
+
+# ----------------------------------------------------------
+# Helper to colour categories in dataframe display
+def color_category(val):
+    colors = {
+        "High": "background-color:#d4f7d4;",
+        "Medium": "background-color:#fff5cc;",
+        "Low": "background-color:#ffd6d6;"
+    }
+    return colors.get(val, "")
+
+# ----------------------------------------------------------
 if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file)
-        st.success(f"✅ Loaded {df.shape[0]} rows and {df.shape[1]} columns")
+        st.success(f"Loaded {df.shape[0]} rows • {df.shape[1]} columns")
 
-        # Navigation
-        section = st.sidebar.radio("🔍 Navigation", ["EDA", "Score Leads", "Export"])
+        page = st.sidebar.radio("Navigation", ["EDA", "Score Leads", "Export"])
 
-        # --------------------------
-        # 🧠 EDA Section
-        # --------------------------
-        if section == "EDA":
+        # ─────────────── 1. EDA ───────────────
+        if page == "EDA":
             st.header("🔍 Exploratory Data Analysis")
 
-            st.subheader("📋 Data Preview")
-            st.dataframe(df.head())
+            with st.expander("Preview (first 5 rows)", expanded=True):
+                st.dataframe(df.head(), use_container_width=True)
 
-            st.subheader("🧱 Data Summary")
             col1, col2 = st.columns(2)
             with col1:
-                st.write("Shape:", df.shape)
-                st.write("Columns:", df.columns.tolist())
+                st.metric("Rows", df.shape[0])
+                st.metric("Columns", df.shape[1])
             with col2:
-                st.write("Missing Values:")
-                st.dataframe(df.isnull().sum())
+                st.write("Missing values:")
+                st.dataframe(df.isnull().sum(), height=200)
 
-            st.subheader("📊 Numerical Distributions")
-            numeric_cols = df.select_dtypes(include=['float', 'int']).columns.tolist()
-            selected = st.multiselect("Select numeric columns", numeric_cols, default=numeric_cols[:2])
-            for col in selected:
-                fig = px.histogram(df, x=col, nbins=30, title=f"Distribution of {col}")
-                st.plotly_chart(fig, use_container_width=True)
+            num_cols = df.select_dtypes(include=['number']).columns.tolist()
+            if num_cols:
+                st.subheader("📊 Numeric Distributions")
+                chosen = st.multiselect("Select numeric columns", num_cols, default=num_cols[:2])
+                for c in chosen:
+                    fig = px.histogram(df, x=c, nbins=30, title=f"{c} distribution")
+                    st.plotly_chart(fig, use_container_width=True)
 
-            st.subheader("📈 Correlation Heatmap")
-            if len(numeric_cols) >= 2:
-                fig = sns.heatmap(df[numeric_cols].corr(), annot=True, cmap="coolwarm")
-                st.pyplot()
-
-        # --------------------------
-        # 🤖 Lead Scoring Section (Batch)
-        # --------------------------
-        elif section == "Score Leads":
-            st.header("🎯 Scoring Leads using ML API (Batch)")
-
-            with st.spinner("Scoring leads in batch..."):
-                try:
-                    # Clean invalid float values
-                    df_cleaned = df.replace([float("inf"), float("-inf")], pd.NA).dropna()
-
-                    response = requests.post(
-                        "http://127.0.0.1:5000/predict",
-                        json=df_cleaned.to_dict(orient="records")
-                    )
-                    result = response.json()
-
-                    if "error" in result:
-                        st.error(f"❌ API Error: {result['error']}")
-                        st.stop()
-
-                    scores_df = pd.DataFrame(result)
-                    scored_df = pd.concat([df_cleaned.reset_index(drop=True), scores_df], axis=1)
-                    scored_df = scored_df.sort_values(by="lead_score_percent", ascending=False)
-                    st.session_state["scored_df"] = scored_df
-
-                    st.success("✅ Batch scoring complete!")
-
-                    st.subheader("📊 Scored Leads")
-                    search = st.text_input("🔍 Search rows:")
-                    if search:
-                        filtered = scored_df[
-                            scored_df.apply(lambda row: row.astype(str).str.contains(search, case=False).any(), axis=1)
-                        ]
-                    else:
-                        filtered = scored_df
-
-                    st.dataframe(filtered)
-
-                except Exception as e:
-                    st.error(f"❌ Failed to score leads: {e}")
-
-
-        # --------------------------
-        # 📤 Export Section
-        # --------------------------
-        elif section == "Export":
-            st.header("📤 Export Scored Data")
-            if "scored_df" not in st.session_state:
-                st.warning("⚠️ Score leads first to enable export.")
+                if len(num_cols) >= 2:
+                    st.subheader("📈 Correlation Heat‑map")
+                    fig, ax = plt.subplots(figsize=(8, 4))
+                    sns.heatmap(df[num_cols].corr(), cmap="coolwarm", annot=True, fmt=".2f", ax=ax)
+                    st.pyplot(fig)
             else:
-                scored_df = st.session_state["scored_df"]
+                st.info("No numeric columns detected.")
 
-                col1, col2 = st.columns(2)
+        # ─────────────── 2. Score Leads ───────────────
+        elif page == "Score Leads":
+            st.header("🤖 Batch Scoring via ML API")
 
-                with col1:
-                    csv = scored_df.to_csv(index=False)
-                    st.download_button("⬇️ Download CSV", csv, "scored_leads.csv", "text/csv")
+            with st.spinner("Calling API…"):
+                df_clean = df.replace([np.inf, -np.inf], np.nan).dropna()
 
-                with col2:
-                    buffer = io.BytesIO()
-                    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-                        scored_df.to_excel(writer, index=False)
-                    buffer.seek(0)
-                    st.download_button(
-                        "⬇️ Download Excel",
-                        buffer,
-                        "scored_leads.xlsx",
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
+                try:
+                    res = requests.post(API_URL, json=df_clean.to_dict(orient="records"), timeout=30)
+                    res.raise_for_status()
+                    pred_json = res.json()
+                except Exception as e:
+                    st.error(f"API error: {e}")
+                    st.stop()
 
-    except Exception as e:
-        st.error(f"❌ Failed to process file: {e}")
+                preds = pd.DataFrame(pred_json)
+                scored_df = pd.concat([df_clean.reset_index(drop=True), preds], axis=1)
+                scored_df.sort_values("lead_score_percent", ascending=False, inplace=True)
+                st.session_state["scored_df"] = scored_df
+
+            # Quick metrics
+            st.subheader("⚡ Quick Metrics")
+            top10 = scored_df.head(10)
+            cat_counts = scored_df["lead_category"].value_counts()
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Top‑10 Avg %", f"{top10['lead_score_percent'].mean():.2f}")
+            col2.metric("High", int(cat_counts.get("High", 0)))
+            col3.metric("Medium", int(cat_counts.get("Medium", 0)))
+
+            # Display table with colour styling
+            st.subheader("📄 Scored Leads")
+            search = st.text_input("Search text")
+            table_df = scored_df.copy()
+            if search:
+                table_df = table_df[table_df.apply(lambda r: r.astype(str).str.contains(search, case=False).any(), axis=1)]
+
+            st.dataframe(table_df.style.applymap(color_category, subset=["lead_category"]), use_container_width=True)
+
+        # ─────────────── 3. Export ───────────────
+        elif page == "Export":
+            st.header("📤 Export Scored Results")
+            if "scored_df" not in st.session_state:
+                st.warning("Score leads first.")
+                st.stop()
+
+            scored_df = st.session_state["scored_df"]
+            c1, c2 = st.columns(2)
+            with c1:
+                csv = scored_df.to_csv(index=False)
+                st.download_button("⬇️ Download CSV", csv, file_name="scored_leads.csv", mime="text/csv")
+            with c2:
+                buf = io.BytesIO()
+                with pd.ExcelWriter(buf, engine="xlsxwriter") as w:
+                    scored_df.to_excel(w, index=False)
+                buf.seek(0)
+                st.download_button(
+                    "⬇️ Download Excel",
+                    buf,
+                    file_name="scored_leads.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+    except Exception as err:
+        st.error(f"❌ Failed to process file: {err}")
+else:
+    st.info("📌 Upload a valid Excel file to begin.")
